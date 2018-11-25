@@ -1,0 +1,314 @@
+Install Ros Kinetic
+http://wiki.ros.org/kinetic/Installation/Ubuntu
+sudo apt-get install ros-kinetic-desktop-full
+sudo apt-get install python-rosinstall python-rosinstall-generator python-wstool build-essential
+
+tested rviz   = OK
+
+Instal opengl utils
+sudo apt-get install mesa-util  === glxgears @ 60fps
+sudo apt-get install glmark2   ==== glmark2   Score: 889 
+
+---ok lest go to Intel----
+https://github.com/IntelRealSense/librealsense/blob/development/doc/distribution_linux.md
+sudo apt-get install librealsense2-dkms
+sudo apt-get install librealsense2-utils
+
+udev rules 
+sudo cp config/99-realsense-libusb.rules /etc/udev/rules.d/
+sudo udevadm control --reload-rules && udevadm trigger
+Reconnect the Intel RealSense depth camera 
+check dmesg if all ok and run: realsense-viewer to verify the installation.
+
+Developers shall install additional packages:
+sudo apt-get install librealsense2-dev
+sudo apt-get install librealsense2-dbg
+
+
+----build for ROS
+https://github.com/intel-ros/realsense
+sudo apt-get install python-catkin-tools
+sudo apt-get install ros-kinetic-rgbd-launch
+
+get latest  code and extract to /src/
+https://github.com/intel-ros/realsense/releases
+
+catkin build (catkin tools)
+init
+build
+and source
+
+echo "source ~/catkin_ws/devel/setup.bash" >> ~/.bashrc
+
+Then:
+roscore
+roslaunch realsense2_camera rs_camera.launch
+rqt_image_view  (just for basic images)
+or
+rosrun rviz rviz
+
+3D
+roslaunch realsense2_camera rs_rgbd.launch
+rosrun rviz rviz  == open papou_point cloud
+
+test with laser emulation (see details below):
+roslaunch depth_laserscan.launch
+add lasercan in rviz
+
+Full Blowned example
+roslaunch realsense2_camera demo_pointcloud.launch
+
+
+
+ ==== ADD LASER EMULATOR :demo_pointcloud.launch 
+roslaunch realsense2_camera demo_pointcloud_laser.launch
+
+   ==== ADDED THIS TO demo_pointcloud.launch 
+
+    <!--- Depth image to laser scan -->
+    <node  pkg="depthimage_to_laserscan" name="depthimage_to_laserscan" type="depthimage_to_laserscan" required="true" >
+        <param name="scan_height" value="60"/> 
+	<param name="range_min" value="0.40"/>
+        <param name="output_frame_id" value="camera_link"/>
+        <remap from="image" to="/camera/depth/image_rect_raw" />
+    </node>
+
+
+
+=====EXTRACT DATA FROM LASER ===note: require MAVROS (See next section)====
+http://www.theconstructsim.com/read-laserscan-data/
+to see raw data:
+rostopic echo /camera/scan -n1
+header: 
+  seq: 7540
+  stamp: 
+    secs: 1543111485
+    nsecs: 943164456
+  frame_id: "camera_link"
+angle_min: -0.686483919621
+angle_max: 0.70264518261
+angle_increment: 0.00217391108163
+time_increment: 0.0
+scan_time: 0.0329999998212
+range_min: 0.449999988079
+range_max: 10.0
+ranges: [2.8948886394500732,  ......
+
+
+------create the scan script----------------------------------------
+!!!!For python nodes, check the permissions on the script. If it's not marked as executable, then you will get this same cryptic error message!!!!!
+
+using NUMPY
+https://docs.scipy.org/doc/numpy-1.13.0/reference/arrays.indexing.html
+https://docs.scipy.org/doc/numpy/reference/generated/numpy.nanmin.html#numpy.nanmin
+
+scan.py:
+#! /usr/bin/env python
+import rospy
+import numpy as np
+from sensor_msgs.msg import LaserScan
+ 
+def callback(msg):
+	scan = np.array (msg.ranges)
+	left = np.nanmin (scan[1:200:8])
+	center = np.nanmin (scan[220:420:8])
+	right = np.nanmin (scan[440:640:8])		
+	print "%.2f" %  left , 
+	print "%.2f" %  center ,	
+	print "%.2f" %  right
+
+rospy.init_node('scan_values')
+sub = rospy.Subscriber('/camera/scan', LaserScan, callback)
+rospy.spin()
+
+
+-----Sent Values as Proximity sensor ==> MavLink-------------------------------------
+http://python.dronekit.io/guide/quick_start.html
+
+sudo apt-get install python-pip python-dev
+pip install dronekit	.....cross fingers that all previous work is note destroyed....
+git clone http://github.com/dronekit/dronekit-python.git
+sudo apt-get install idle
+not yet (udo apt-get install idle3)
+
+make idle default
+sudo nano /usr/share/applications/defaults.list
+text/x-python=idle.desktop
+REBOOT
+
+Do basic stuff ... Yeah cool....Now the real thing:
+scan_prox.py
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+import rospy
+from sensor_msgs.msg import LaserScan
+from dronekit import connect, VehicleMode
+import time
+import numpy as np
+import math
+
+
+#https://mavlink.io/en/messages/common.html#MAV_SENSOR_ORIENTATION
+def send_distance_message(dist,orient):
+    msg = vehicle.message_factory.distance_sensor_encode(
+        0,          # time since system boot, not used
+        1,          # min distance cm
+        1000,       # max distance cm
+        dist,       # current distance, must be int
+        0,          # type = laser?
+        0,          # onboard id, not used
+        orient,     # must be set to MAV_SENSOR_ROTATION_PITCH_270 for mavlink rangefinder, represents downward facing
+        0           # covariance, not used
+    )
+    vehicle.send_mavlink(msg)
+    vehicle.flush()
+
+def callback(msg):
+
+        scan = np.array (msg.ranges)
+        left = (np.nanmin (scan[1:200:8]))*100
+        center = (np.nanmin (scan[220:420:8]))*100
+        right = np.nanmin ((scan[440:640:8]))*100	
+        send_distance_message(left,7)
+        send_distance_message(center,0)
+        send_distance_message(right,1)	
+        #print "%.2f" %  left , 
+        #print "%.2f" %  center ,	
+        #print "%.2f" %  right
+
+
+
+# Connect to the Vehicle. 
+#   Set `wait_ready=True` to ensure default attributes are populated before `connect()` returns.
+print("\nConnecting to vehicle")
+#vehicle = connect('udpin:0.0.0.0:14551', wait_ready=True)
+vehicle = connect('tcp:192.168.2.18:5763', wait_ready=True)
+
+rospy.init_node('scan_values')
+sub = rospy.Subscriber('/camera/scan', LaserScan, callback)
+rospy.spin()
+
+
+
+
+BUILDING
+cd src
+catkin create pkg laser_scan
+
+copy python script  in src/laser_scan
+make it executable
+chmod +x *.py
+copy launch file in /launch
+
+catkin build
+source devel/setup.bash
+
+roslaunch laser_scan laser.launch
+
+
+
+
+=========MAVROS & ArduPilot =====
+http://ardupilot.org/dev/docs/ros-install.html
+https://github.com/mavlink/mavros/tree/master/mavros#installation
+
+Prereq.
+sudo apt-get install ros-kinetic-rqt ros-kinetic-rqt-common-plugins ros-kinetic-rqt-robot-plugins
+
+Install Mavros 
+sudo apt-get install ros-kinetic-mavros ros-kinetic-mavros-extras
+
+====The geoid dataset is mandatory to allow the conversion between heights in order to respect ROS msg API. Not having the dataset available will shutdown the mavros_node ===
+
+wget https://raw.githubusercontent.com/mavlink/mavros/master/mavros/scripts/install_geographiclib_datasets.sh
+chmod a+x install_geographiclib_datasets.sh
+./install_geographiclib_datasets.sh
+
+
+===TEST====
+http://ardupilot.org/dev/docs/ros-sitl.html
+
+- Start ROS
+roscore
+
+- Start SITL and point to Companion:
+ sim_hehicle.py --console --map --aircraft quadcopter --out udp:192.168.2.229:14551
+
+- Launch Mavros
+roslaunch mavros apm.launch fcu_url:=udp://:14551@
+
+- Launch RQT
+rqt
+Go to plugins/ topics /topics monitor click on the box to see the current value.
+Go to plugins / services/ services caller set service to /mavros/set_mode 
+set custom_mode to ‘GUIDED’ and click the call button 
+The response should be true, you can look on /mavros/state topic that the mode is now GUIDED. it should be the same in you MAVProxy console.
+
+Send manual commands (from a new Terminal):
+command reference:
+http://wiki.ros.org/mavros#Usage
+
+Ex. arm the vehicle:
+rosrun mavros mavsafety arm 
+
+
+
+===ROS distance sensor usage===
+http://ardupilot.org/dev/docs/ros-distance-sensors.html
+
+https://github.com/mavlink/mavros/issues/664
+unblacklist the plugin in the yaml configuration file
+roscd mavros
+cd launch
+cat apm_pluginlists.yaml 
+plugin_blacklist:
+# common
+- actuator_control
+- ftp
+- safety_area
+- hil
+# extras
+- altitude
+- debug_value
+- image_pub
+- mocap_pose_estimate
+- px4flow
+- vibration
+- vision_speed_estimate
+
+plugin_whitelist: []
+#- 'sys_*'
+
+====> OK its ont blacklisted , Now the config ===> cat apm_config.yaml
+...
+...
+...
+# distance_sensor
+## Currently available orientations:
+#    Check http://wiki.ros.org/mavros/Enumerations
+##
+distance_sensor:
+  rangefinder_pub:
+    id: 0
+    frame_id: "lidar"
+    #orientation: PITCH_270 # sended by FCU
+    field_of_view: 0.0  # XXX TODO
+    send_tf: false
+    sensor_position: {x:  0.0, y:  0.0, z:  -0.1}
+  rangefinder_sub:
+    subscriber: true
+    id: 1
+    orientation: PITCH_270  # only that orientation are supported by APM 3.4+
+...
+...
+
+
+
+
+====================END=====================
+
+
+
+
+
