@@ -1,0 +1,6 @@
+<launch>
+    <node pkg="laser_scan" type="scan_prox.py" name="scan" output="screen">
+        
+    </node>
+</launch>
+
